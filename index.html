@@ -147,8 +147,8 @@
         </div>
 
         <div class="no-print-controls">
-            <button class="btn-save" onclick="exportarJSON()">💾 RESPALDO</button>
-            <button class="btn-load" onclick="document.getElementById('fileIn').click()">📂 CARGAR</button>
+            <button class="btn-save" onclick="exportarJSON()" title="Guardar respaldo de todos los años">💾 RESPALDO</button>
+            <button class="btn-load" onclick="document.getElementById('fileIn').click()" title="Restaurar datos">📂 CARGAR</button>
             <input type="file" id="fileIn" style="display:none" onchange="importarJSON(event)">
             <button class="btn-print" onclick="window.print()">🖨️ GENERAR PDF</button>
         </div>
@@ -168,11 +168,13 @@
 </div>
 
 <script>
-    const DB_PREFIX = "meteo_master_v10_"; 
+    // TU ENLACE OFICIAL DE CLOUDFLARE PARA PRONOSTICOS
+    const WORKER_URL = "https://api-pronosticos.salaspancho16.workers.dev";
+    
     let isMouseDown = false;
-    let db = [];
+    let dbGlobal = {}; // Contenedor global para guardar todos los años juntos en la nube
+    let db = []; // Referencia visual al año seleccionado
 
-    // RESTAURACIÓN DE LA LISTA ORIGINAL CON FRECUENCIAS CORREGIDAS
     const PRONOSTICOS_BASE = [
         { nombre: "CHILOE ORIENTAL PM", freq: 2 },
         { nombre: "CANAL CHACAO", freq: 4 },
@@ -190,7 +192,7 @@
     const mesesNombres = ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"];
     const hoy = new Date();
 
-    window.onload = () => {
+    window.onload = async () => {
         const aSel = document.getElementById("anioSelect");
         for(let a=2020; a<=2035; a++) aSel.add(new Option(a, a));
         aSel.value = hoy.getFullYear();
@@ -199,16 +201,30 @@
         mesesNombres.forEach((m, i) => mSel.add(new Option(m, i)));
         mSel.value = hoy.getMonth();
 
+        // 1. Cargar datos de la nube
+        await cargarDesdeNube();
+        // 2. Procesar el año en pantalla
         cargarAnio();
     };
 
+    async function cargarDesdeNube() {
+        try {
+            const respuesta = await fetch(WORKER_URL);
+            dbGlobal = await respuesta.json();
+        } catch (error) {
+            console.error("Error conectando con la base de datos:", error);
+            dbGlobal = {};
+        }
+    }
+
     function cargarAnio() {
         const anio = document.getElementById("anioSelect").value;
-        const data = localStorage.getItem(DB_PREFIX + anio);
-        if(data) {
-            db = JSON.parse(data);
+        if(dbGlobal[anio]) {
+            db = dbGlobal[anio];
         } else {
+            // Si el año es nuevo, lo creamos desde cero y lo metemos en la base
             db = PRONOSTICOS_BASE.map(p => ({ nombre: p.nombre, frecuencia: p.freq, marcas: {} }));
+            dbGlobal[anio] = db;
         }
         renderizar();
     }
@@ -237,7 +253,14 @@
 
     function salvar() {
         const anio = document.getElementById("anioSelect").value;
-        localStorage.setItem(DB_PREFIX + anio, JSON.stringify(db));
+        dbGlobal[anio] = db;
+        
+        // Sincronización silenciosa con Cloudflare
+        fetch(WORKER_URL, {
+            method: 'POST',
+            body: JSON.stringify(dbGlobal)
+        }).catch(err => console.error("Error al guardar en la nube:", err));
+        
         renderizar();
     }
 
@@ -291,17 +314,26 @@
     function eliminarFila(idx) { if(confirm("¿Eliminar sector?")) { db.splice(idx, 1); salvar(); } }
     
     function exportarJSON() {
-        const anio = document.getElementById("anioSelect").value;
-        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(db));
+        // Ahora exporta TODA la base de datos, no solo un año
+        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(dbGlobal));
         const a = document.createElement('a');
-        a.href = dataStr; a.download = `Control_General_Pronoticos_${anio}.json`; a.click();
+        a.href = dataStr; a.download = `Control_Pronosticos_Global_Nube.json`; a.click();
     }
 
     function importarJSON(e) {
         const reader = new FileReader();
         reader.onload = (ev) => { 
             try { 
-                db = JSON.parse(ev.target.result);
+                const dataCargada = JSON.parse(ev.target.result);
+                // Si el archivo es antiguo (un array), lo guarda en el año seleccionado
+                if(Array.isArray(dataCargada)) {
+                    const anio = document.getElementById("anioSelect").value;
+                    dbGlobal[anio] = dataCargada;
+                } else {
+                    // Si es el nuevo respaldo global, reemplaza todo
+                    dbGlobal = dataCargada;
+                }
+                cargarAnio();
                 salvar(); 
             } catch(err) { alert("Archivo no válido"); } 
         };
